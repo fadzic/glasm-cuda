@@ -18,7 +18,7 @@
 
 
 #include "glasm_cuda.h"
-#include "sga_cuda.h"
+#include "sga.h"
 #include <iostream>
 
 #ifdef DRAW_PNG
