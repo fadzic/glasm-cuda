@@ -58,6 +58,7 @@ namespace GLASM_CUDA
 
 void init(const char* filename)
 {
+	cudaDeviceReset();
 // reads and sets initial parameters
 //#ifdef DRAW_PNG
 	bool draw_lookup;
@@ -296,6 +297,8 @@ void post_match()
 {   if (!static_map) {
 		delete_lookup_table();
 	}
+
+	clean_up_cuda();
 }
 
 void deinit()
