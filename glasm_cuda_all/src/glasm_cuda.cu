@@ -55,8 +55,7 @@ namespace GLASM_CUDA {
 //--------------------------DEVICE ------------------------------------------
 //---------------------------------------------------------------------------
 
-unsigned char **d_lookup;
-unsigned char **h_AA;
+unsigned char *d_lookup;
 size_t pitch;
 reading *readingsArray;
 reading *d_readings;
@@ -71,7 +70,7 @@ int *d_redings_size;
 position *d_pos;
 
 __global__ void d_FintessCount(
-		unsigned char **lookup,
+		unsigned char *lookup,
 		reading *readings,
 		double *lookup_ox,
 		double *lookup_step_x,
@@ -83,14 +82,10 @@ __global__ void d_FintessCount(
 		int *readings_size,
 		position *pos)
 {
-	int i = blockIdx.x*blockDim.x+threadIdx.x;
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
 
 	if (i>=*readings_size)
 		return;
-
-	printf("d_lookup[0][0]");
-	printf("d_lookup[0][0]: %u\n", lookup[0][0]);
-
 
 	double X = pos->x + readings[i].distance * cos(pos->rot + readings[i].angle);
 	double Y = pos->y + readings[i].distance * sin(pos->rot + readings[i].angle);
@@ -99,10 +94,10 @@ __global__ void d_FintessCount(
 	unsigned iy = (unsigned int) (floor((Y - *lookup_oy) / *lookup_step_y + 0.5));
 
 	//TODO: remove this pointless?? comparison?
-	if (ix < *lookup_columns && ix >= 0 && iy < *lookup_rows && iy >= 0) {
-		*counter += lookup[ix][iy];
+	if (ix < *lookup_columns && iy < *lookup_rows) {
+		//atomicAdd(counter, lookup[ix**lookup_columns + iy]);
+		*counter += lookup[ix**lookup_columns + iy];
 	}
-
 }
 
 void clean_up_cuda(){
@@ -118,7 +113,6 @@ void clean_up_cuda(){
 	cudaFree(d_lookup_columns);
 	cudaFree(d_redings_size);
 	cudaFree(d_pos);
-	cudaFree(h_AA);
 	cudaFree(d_lookup);
 
 }
@@ -198,7 +192,7 @@ unsigned rotmask;
 //---------------------------------------------------------------------------
 
 // lookup table, its parameters and proc to set them from outside
-unsigned char **lookup;
+unsigned char *lookup;
 unsigned char **valid;
 double lookup_step_x;      // lookup_size_x/lookup_columns;
 double lookup_step_y;      // lookup_size_y/lookup_rows;
@@ -229,7 +223,7 @@ void setLookupTableParameters(int ulookup_rows, int ulookup_columns,
 	corr_distance = ucorr_distance;
 
 	// show memory usage of GPU
-
+/*
 	size_t free_byte ;
 
 	size_t total_byte ;
@@ -250,7 +244,7 @@ void setLookupTableParameters(int ulookup_rows, int ulookup_columns,
 
 	printf("GPU memory usage: used = %f, free = %f MB, total = %f MB\n",used_db/1024.0/1024.0, free_db/1024.0/1024.0, total_db/1024.0/1024.0);
 	getchar();
-
+*/
 	CUDA_SAFE_CALL(cudaMalloc((void **)&d_lookup_ox, sizeof(double)));
 	CUDA_SAFE_CALL(cudaMemcpy(d_lookup_ox, &lookup_ox, sizeof(double), cudaMemcpyHostToDevice));
 
@@ -328,17 +322,13 @@ void setNewScan(const scan& usnew) {
 
 	readingsArray = new reading[SIZE];
 	std::copy(ScanNew.readings.begin(),ScanNew.readings.end(), readingsArray);
+	printf("Device array. distance: %f, angle: %f\n", readingsArray[0].distance, readingsArray[0].angle);
 
-	printf("device.distance: %f\n", readingsArray[0].distance);
-
-	CUDA_SAFE_CALL(cudaMalloc((void **)&d_readings, SIZE*sizeof(reading)));
-	CUDA_SAFE_CALL(cudaMemcpy(d_readings, readingsArray, SIZE*sizeof(reading), cudaMemcpyHostToDevice));
+	CUDA_SAFE_CALL(cudaMalloc((void **)&d_readings, SIZE*sizeof(struct reading)));
+	CUDA_SAFE_CALL(cudaMemcpy(d_readings, readingsArray, SIZE*sizeof(struct reading), cudaMemcpyHostToDevice));
 
 	CUDA_SAFE_CALL(cudaMalloc((void **)&d_redings_size, sizeof(int)));
 	CUDA_SAFE_CALL(cudaMemcpy(d_redings_size, &SIZE, sizeof(int), cudaMemcpyHostToDevice));
-
-	CUDA_SAFE_CALL(cudaMalloc((void **)&d_pos, sizeof(position)));
-	CUDA_SAFE_CALL(cudaMemcpy(d_pos, &ScanNew.pos, sizeof(position), cudaMemcpyHostToDevice));
 }
 
 void add_dither_to_scan(scan &S) {
@@ -408,8 +398,8 @@ void draw_lookup_table(const char * filename, int type)
 		for (unsigned i = 0; i < lookup_columns; i++)
 		for (unsigned j = 0; j < lookup_rows; j++)
 		{
-			if (type==0) img.plot(i,j,(int)lookup[i][j]*50000,(int)lookup[i][j]*50000,(int)lookup[i][j]*50000);
-			else if (type==1) img.plot(i,j,(int)lookup[i][j]*256,(int)lookup[i][j]*256,(int)lookup[i][j]*256);
+			if (type==0) img.plot(i,j,(int)lookup[i*lookup_columns + j]*50000,(int)lookup[i*lookup_columns + j]*50000,(int)lookup[i*lookup_columns + j]*50000);
+			else if (type==1) img.plot(i,j,(int)lookup[i*lookup_columns + j]*256,(int)lookup[i*lookup_columns + j]*256,(int)lookup[i*lookup_columns + j]*256);
 		}
 		img.close();
 	}
@@ -432,10 +422,8 @@ void draw_valid_table(const char * filename)
 void initialize_binary_lookup_table() {
 	try {    // allocazione memoria per array (tabella di lookup)
 
-		lookup = new unsigned char*[lookup_columns]; // sizeX (sizeX puntatori a colonne)
+		lookup = new unsigned char[lookup_columns*lookup_rows]; // sizeX (sizeX puntatori a colonne)
 
-		for (unsigned j = 0; j < lookup_columns; j++)
-			lookup[j] = new unsigned char[lookup_rows]; // sizeY (sizeY elementi di una colonna)
 	} catch (std::bad_alloc &e) {
 		throw std::string(
 				"Bad allocation, probabilmente non ho sufficente memoria");
@@ -444,7 +432,7 @@ void initialize_binary_lookup_table() {
 // inizializzazione array di lookup
 	for (unsigned i = 0; i < lookup_columns; i++)
 		for (unsigned j = 0; j < lookup_rows; j++)
-			lookup[i][j] = 0;
+			lookup[i*lookup_rows + j] = 0;
 
 	lookup_step_x = lookup_size_x / lookup_columns;
 	lookup_step_y = lookup_size_y / lookup_rows;
@@ -492,7 +480,7 @@ void initialize_binary_lookup_table() {
 		for (unsigned i = ix; i < fx; i++)
 
 			for (unsigned j = iy; j < fy; j++) {
-				lookup[i][j] = 1;
+				lookup[i*lookup_columns + j] = 1;
 			}
 		i1++;
 	}
@@ -506,24 +494,8 @@ void initialize_binary_lookup_table() {
 	}
 #endif
 
-
-	h_AA = (unsigned char**)malloc(lookup_rows* sizeof(unsigned char*));
-	CUDA_SAFE_CALL(cudaMalloc((void **)&d_lookup, lookup_rows*sizeof(unsigned char*)));
-
-	for(int i = 0 ; i < lookup_rows ; i++)    {
-		//printf("%d\n", i);
-		CUDA_SAFE_CALL(cudaMalloc((void **)&h_AA[i],lookup_columns*sizeof(unsigned char*)));
-		CUDA_SAFE_CALL(cudaMemcpy(h_AA[i], lookup[i], lookup_columns*sizeof(unsigned char*), cudaMemcpyHostToDevice));
-	}
-	CUDA_SAFE_CALL(cudaMemcpy(d_lookup, h_AA, lookup_rows*sizeof(unsigned char*), cudaMemcpyHostToDevice));
-	CUDA_SAFE_CALL(cudaMalloc((void **)&d_lookup, lookup_rows*sizeof(unsigned char*)));
-
-/*
-	const size_t a_size = sizeof(unsigned char) * size_t(lookup_rows*lookup_columns);
-	cudaMalloc((void **)&d_lookup, a_size);
-	cudaMemcpy(d_lookup, &lookup, a_size, cudaMemcpyHostToDevice);
-*/
-	printf("lookup[0][0]: %u\n", lookup[0][0]);
+	CUDA_SAFE_CALL(cudaMalloc((void **)&d_lookup, lookup_rows*lookup_columns*sizeof(unsigned char)));
+	CUDA_SAFE_CALL(cudaMemcpy(d_lookup, lookup, lookup_columns*lookup_rows*sizeof(unsigned char), cudaMemcpyHostToDevice));
 }
 //---------------------------------------------------------------------------
 
@@ -718,10 +690,7 @@ void initialize_radial_gradient(double RGmean, double RGvariance,
 void initialize_gradient_lookup_table() {
 	try {   // allocazione memoria per array (tabella di lookup)
 
-		lookup = new unsigned char*[lookup_columns]; // righe dell'array
-
-		for (unsigned j = 0; j < lookup_columns; j++)
-			lookup[j] = new unsigned char[lookup_rows]; // colonne dell'array
+		lookup = new unsigned char[lookup_columns*lookup_rows]; // righe dell'array
 	} catch (std::bad_alloc &e) {
 		throw std::string(
 				"Bad allocation, probabilmente non ho sufficente memoria");
@@ -730,7 +699,7 @@ void initialize_gradient_lookup_table() {
 // inizializzazione array di lookup
 	for (unsigned i = 0; i < lookup_columns; i++)
 		for (unsigned j = 0; j < lookup_rows; j++)
-			lookup[i][j] = 0;
+			lookup[i*lookup_rows + j] = 0;
 
 	unsigned MX = (unsigned int) (lookup_size_x / lookup_step_x - NX2); // maximum X, ie last X cell where border starts
 	unsigned MY = (unsigned int) (lookup_size_y / lookup_step_y - NY2); // maximum Y, ie last Y cell
@@ -771,11 +740,11 @@ void initialize_gradient_lookup_table() {
 		for (unsigned i = ix; i < fx; i++)
 
 			for (unsigned j = iy; j < fy; j++) {
-				sum = lookup[i][j] + RGbmp[i - ix][j - iy];
+				sum = lookup[i*lookup_rows + j] + RGbmp[i - ix][j - iy];
 				if (sum > 255)
-					lookup[i][j] = 255;
+					lookup[i*lookup_rows + j] = 255;
 				else
-					lookup[i][j] = sum;
+					lookup[i*lookup_rows + j] = sum;
 				//lookup[i][j]+=RGbmp[i-ix][j-iy];
 			}
 		i1++;
@@ -798,9 +767,7 @@ void initialize_gradient_lookup_table() {
 //---------------------------------------------------------------------------
 
 void delete_lookup_table() {
-	for (unsigned i = 0; i < lookup_columns; i++)
-		delete[] lookup[i]; // delete the columns
-	delete[] lookup; // delete the rows
+	delete[] lookup; // delete lookup
 }
 
 //---------------------------------------------------------------------------
@@ -835,7 +802,7 @@ void drawfun(int run, int gen, int popsize, struct individual *newpop, struct be
 				img1.setpointsize(10);
 				for (unsigned i = 0; i < lookup_columns; i++)
 				for (unsigned j = 0; j < lookup_rows; j++)
-				{	if (lookup[i][j]) img1.point(lookup_step_x*i,lookup_step_y*j);
+				{	if (lookup[i*lookup_columns + j]) img1.point(lookup_step_x*i,lookup_step_y*j);
 				}
 
 				// draw readings
@@ -892,17 +859,27 @@ void objfun(struct individual *critter) {
 	unsigned counter = 0;
 	unsigned h_counter;
 
-	SIT i2 = ScanNew.readings.begin();
+	//SIT i2 = ScanNew.readings.begin();
+
+	//printf("Host reading. distance: %f, angle: %f\n", i2->distance, i2->angle);
 
 
 	unsigned tmp = 0;
-	//CUDA_SAFE_CALL(cudaMalloc((void **)&d_counter, sizeof(unsigned)));
-	//CUDA_SAFE_CALL(cudaMemcpy(d_counter, &tmp, sizeof(unsigned), cudaMemcpyHostToDevice));
+	CUDA_SAFE_CALL(cudaMalloc((void **)&d_counter, sizeof(unsigned)));
+	CUDA_SAFE_CALL(cudaMemcpy(d_counter, &tmp, sizeof(unsigned), cudaMemcpyHostToDevice));
 
 	//calculate blockDim and threadDim
-
+	int threadsPerBlock;
+	if(ScanNew.readings.size()<1024){
+		threadsPerBlock = ScanNew.readings.size();
+	}
+	else{
+		threadsPerBlock = 1024;
+	}
+	int numOfBlocks = ScanNew.readings.size() / threadsPerBlock + 1.5;
+	cudaDeviceSynchronize();
 	//call the kernel function
-	d_FintessCount<<<1,1>>>(d_lookup,
+	d_FintessCount<<<numOfBlocks,threadsPerBlock>>>(d_lookup,
 			d_readings,
 			d_lookup_ox,
 			d_lookup_step_x,
@@ -915,26 +892,10 @@ void objfun(struct individual *critter) {
 			d_pos);
 
 	cudaDeviceSynchronize();
-	//CUDA_SAFE_CALL(cudaMemcpy(&h_counter, d_counter, sizeof(unsigned), cudaMemcpyDeviceToHost));
 
-	while (i2 != ScanNew.readings.end()) {
-		// coordinate X,Y gobali del reading di S2
-		double X = ScanNew.pos.x + i2->distance * cos(ScanNew.pos.rot + i2->angle);
-		double Y = ScanNew.pos.y + i2->distance * sin(ScanNew.pos.rot + i2->angle);
+	CUDA_SAFE_CALL(cudaMemcpy(&h_counter, d_counter, sizeof(unsigned), cudaMemcpyDeviceToHost));
 
-		// discretizzazione
-		unsigned ix = (unsigned int) (floor((X - lookup_ox) / lookup_step_x + 0.5)); // discretizzo X+lookup_ox cioe X espresso in coord locali nel frame
-		unsigned iy = (unsigned int) (floor((Y - lookup_oy) / lookup_step_y + 0.5)); // -
-
-		//TODO: remove this pointless?? comparison?
-		if (ix < lookup_columns && ix >= 0 && iy < lookup_rows && iy >= 0) {
-			counter += lookup[ix][iy];
-		}
-
-		i2++;
-	}
-	//printf("COUNTER: h: %u   d: %u\n",counter ,d_counter);
-	critter->fitness = counter;
+	critter->fitness = h_counter;
 }
 //---------------------------------------------------------------------------
 
@@ -972,6 +933,10 @@ bool chromosome2pos(const unsigned c)// interpreta posizione dal cromosoma (sape
 	ScanNew.pos.rot = MinFI + fi * StepFI;
 	if (ScanNew.pos.rot > 2 * M_PI)
 		ScanNew.pos.rot -= 2 * M_PI; // this line should not be necessary ???
+
+	CUDA_SAFE_CALL(cudaMalloc((void **)&d_pos, sizeof(struct position)));
+	CUDA_SAFE_CALL(cudaMemcpy(d_pos, &ScanNew.pos, sizeof(struct position), cudaMemcpyHostToDevice));
+
 	return true;
 
 }
