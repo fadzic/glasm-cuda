@@ -149,6 +149,8 @@ bestever sga(void) // la funzione principale da chiamare dopo aver settato tutti
 }
 //---------------------------------------------------------------------------
 
+//normal generation
+/*
 void generation()
 {	int mate1, mate2, jcross, j = 0;
 	preselect();// perform any preselection actions necessary before generation
@@ -166,8 +168,33 @@ void generation()
 		newpop[j+1].parent[0] = mate1+1;
 		newpop[j+1].xsite = jcross;
 		newpop[j+1].parent[1] = mate2+1;
-		j = j + 2;// Increment population index */
+		j = j + 2;// Increment population index
 	} while(j < (popsize-1));
+}
+*/
+
+//cuda generation
+void generation()
+{	int mate1, mate2, jcross, j = 0;
+	preselect();// perform any preselection actions necessary before generation
+	do// select, crossover, and mutation
+	{ 	mate1 = select(); // pick a pair of mates
+		mate2 = select();
+		jcross = crossover(oldpop[mate1].chrom, oldpop[mate2].chrom, newpop[j].chrom, newpop[j+1].chrom);// Crossover and mutation
+		mutation(newpop[j].chrom);
+		mutation(newpop[j+1].chrom);
+		//sga_objfun(&(newpop[j]));// Decode string, evaluate fitness, & record parentage date on both children
+		newpop[j].parent[0] = mate1+1;
+		newpop[j].xsite = jcross;
+		newpop[j].parent[1] = mate2+1;
+		//sga_objfun(&(newpop[j+1]));
+		newpop[j+1].parent[0] = mate1+1;
+		newpop[j+1].xsite = jcross;
+		newpop[j+1].parent[1] = mate2+1;
+		j = j + 2;// Increment population index
+	} while(j < (popsize-1));
+
+	sga_objfun(newpop);
 }
 //---------------------------------------------------------------------------
 
@@ -183,8 +210,8 @@ void initialize() // Initialization Coordinator
 		oldpop[j].parent[0] = 0;// Initialize parent info
 		oldpop[j].parent[1] = 0;
 		oldpop[j].xsite = 0;
-		sga_objfun(&(oldpop[j]));// Evaluate initial fitness
 	}
+	sga_objfun(oldpop);// Evaluate initial fitness
 	statistics(oldpop);
 }
 //---------------------------------------------------------------------------

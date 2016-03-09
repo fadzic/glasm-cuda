@@ -59,6 +59,8 @@ unsigned char *d_lookup;
 size_t pitch;
 reading *readingsArray;
 reading *d_readings;
+individual *d_population;
+int *d_popsize;
 double *d_lookup_ox;
 double *d_lookup_step_x;
 double *d_lookup_oy;
@@ -76,28 +78,42 @@ __global__ void d_FintessCount(
 		double *lookup_step_x,
 		double *lookup_oy,
 		double *lookup_step_y,
-		unsigned *counter,
 		unsigned *lookup_rows,
 		unsigned *lookup_columns,
 		int *readings_size,
-		position *pos)
+		position *pos,
+		individual *population,
+		int *popsize)
 {
-	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	//__shared__ int tmp_count = *counter;
 
-	if (i>=*readings_size)
+	int id = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (id>=*popsize)
 		return;
 
-	double X = pos->x + readings[i].distance * cos(pos->rot + readings[i].angle);
-	double Y = pos->y + readings[i].distance * sin(pos->rot + readings[i].angle);
-
-	unsigned ix = (unsigned int) (floor((X - *lookup_ox) / *lookup_step_x + 0.5));
-	unsigned iy = (unsigned int) (floor((Y - *lookup_oy) / *lookup_step_y + 0.5));
-
-	//TODO: remove this pointless?? comparison?
-	if (ix < *lookup_columns && iy < *lookup_rows) {
-		//atomicAdd(counter, lookup[ix**lookup_columns + iy]);
-		*counter += lookup[ix**lookup_columns + iy];
+	//check for invalid position
+	if (population[id].fitness == -1)
+	{
+		population[id].fitness = 0;
+		return;
 	}
+
+	unsigned counter = 0;
+
+	for (int i=0; i<*readings_size; i++){
+		double X = pos[id].x + readings[i].distance * cos(pos[id].rot + readings[i].angle);
+		double Y = pos[id].y + readings[i].distance * sin(pos[id].rot + readings[i].angle);
+
+		unsigned ix = (unsigned int) (floor((X - *lookup_ox) / *lookup_step_x + 0.5));
+		unsigned iy = (unsigned int) (floor((Y - *lookup_oy) / *lookup_step_y + 0.5));
+
+		if (ix < *lookup_columns && iy < *lookup_rows) {
+			counter += lookup[ix**lookup_columns + iy];
+		}
+	}
+
+	population[id].fitness = counter;
 }
 
 void clean_up_cuda(){
@@ -107,14 +123,11 @@ void clean_up_cuda(){
 	cudaFree(d_lookup_step_x);
 	cudaFree(d_lookup_oy);
 	cudaFree(d_lookup_step_y);
-	cudaFree(d_counter);
-	cudaFree(readingsArray);
 	cudaFree(d_lookup_rows);
 	cudaFree(d_lookup_columns);
 	cudaFree(d_redings_size);
-	cudaFree(d_pos);
 	cudaFree(d_lookup);
-
+	cudaFree(d_popsize);
 }
 
 //---------------------------------------------------------------------------
@@ -123,7 +136,7 @@ void clean_up_cuda(){
 
 // local proc declarations
 //void objfunc(struct individual *critter);
-bool chromosome2pos(unsigned c);
+bool chromosome2pos(unsigned c, position *pos);
 //void initializeInvGrayTable(void);
 //void initializeLookupTable(void);
 //void deleteLookupTable(void);
@@ -183,6 +196,10 @@ void setGeneticParameters(int unbitx, int unbity, int unbitrot, int upopsize,
 	maxgen = umaxgen;
 	pcross = upcross;
 	pmutation = upmutation;
+
+	//init and copy positions to device
+	CUDA_SAFE_CALL(cudaMalloc((void **)&d_popsize, popsize*sizeof(int)));
+	CUDA_SAFE_CALL(cudaMemcpy(d_popsize, &popsize, popsize*sizeof(int), cudaMemcpyHostToDevice));
 }
 //---------------------------------------------------------------------------
 
@@ -320,9 +337,8 @@ void setNewScan(const scan& usnew) {
 
 	int SIZE = ScanNew.readings.size();
 
-	readingsArray = new reading[SIZE];
+	reading *readingsArray = new reading[SIZE];
 	std::copy(ScanNew.readings.begin(),ScanNew.readings.end(), readingsArray);
-	printf("Device array. distance: %f, angle: %f\n", readingsArray[0].distance, readingsArray[0].angle);
 
 	CUDA_SAFE_CALL(cudaMalloc((void **)&d_readings, SIZE*sizeof(struct reading)));
 	CUDA_SAFE_CALL(cudaMemcpy(d_readings, readingsArray, SIZE*sizeof(struct reading), cudaMemcpyHostToDevice));
@@ -848,59 +864,73 @@ inline int float2int(double d) {
 	return c.l;
 }
 
-void objfun(struct individual *critter) {
+void objfun(struct individual *newPop) {
 	// if (cachehit(critter->chrom)
 
-	if (!chromosome2pos(critter->chrom)) {
-		critter->fitness = 0; // invalid position: for now if position is invalid put fitness at 0 (ie low)
-		return;
+	//get positions for each critter
+	position positions[popsize];
+	for(int i=0; i<popsize; i++)
+	{
+		if (!chromosome2pos(newPop[i].chrom, &positions[i])) {
+			newPop[i].fitness = -1; // invalid position
+		}
 	}
 
-	unsigned counter = 0;
-	unsigned h_counter;
+	//init and copy positions to device
+	CUDA_SAFE_CALL(cudaMalloc((void **)&d_pos, popsize*sizeof(struct position)));
+	CUDA_SAFE_CALL(cudaMemcpy(d_pos, positions, popsize*sizeof(struct position), cudaMemcpyHostToDevice));
 
-	//SIT i2 = ScanNew.readings.begin();
-
-	//printf("Host reading. distance: %f, angle: %f\n", i2->distance, i2->angle);
-
-
-	unsigned tmp = 0;
-	CUDA_SAFE_CALL(cudaMalloc((void **)&d_counter, sizeof(unsigned)));
-	CUDA_SAFE_CALL(cudaMemcpy(d_counter, &tmp, sizeof(unsigned), cudaMemcpyHostToDevice));
+	//init and copy population
+	CUDA_SAFE_CALL(cudaMalloc((void **)&d_population, popsize*sizeof(struct individual)));
+	CUDA_SAFE_CALL(cudaMemcpy(d_population, newPop, popsize*sizeof(struct individual), cudaMemcpyHostToDevice));
 
 	//calculate blockDim and threadDim
 	int threadsPerBlock;
-	if(ScanNew.readings.size()<1024){
-		threadsPerBlock = ScanNew.readings.size();
+	if(popsize<1024){
+		threadsPerBlock = popsize;
 	}
 	else{
 		threadsPerBlock = 1024;
 	}
-	int numOfBlocks = ScanNew.readings.size() / threadsPerBlock + 1.5;
-	cudaDeviceSynchronize();
+	int numOfBlocks = popsize / threadsPerBlock + 1.5;
+
 	//call the kernel function
-	d_FintessCount<<<numOfBlocks,threadsPerBlock>>>(d_lookup,
+	d_FintessCount<<<numOfBlocks,threadsPerBlock>>>(
+			d_lookup,
 			d_readings,
 			d_lookup_ox,
 			d_lookup_step_x,
 			d_lookup_oy,
 			d_lookup_step_y,
-			d_counter,
 			d_lookup_rows,
 			d_lookup_columns,
 			d_redings_size,
-			d_pos);
+			d_pos,
+			d_population,
+			d_popsize);
 
 	cudaDeviceSynchronize();
 
-	CUDA_SAFE_CALL(cudaMemcpy(&h_counter, d_counter, sizeof(unsigned), cudaMemcpyDeviceToHost));
+	struct individual *newPopTmp;
+	newPopTmp = new individual[popsize];
 
-	critter->fitness = h_counter;
+	CUDA_SAFE_CALL(cudaMemcpy(newPopTmp, d_population, popsize*sizeof(struct individual), cudaMemcpyDeviceToHost));
+
+	for(int i=0; i<popsize;i++)
+	{
+		//printf("%f\n",newPopTmp[i].fitness);
+		newPop[i].fitness = newPopTmp[i].fitness;
+		//newPop[i].fitness = 0;
+	}
+
+
+	CUDA_SAFE_CALL(cudaFree(d_pos));
+	CUDA_SAFE_CALL(cudaFree(d_population));
 }
 //---------------------------------------------------------------------------
 
 // TODO: avoid function call (make it void as before or define inline)
-bool chromosome2pos(const unsigned c)// interpreta posizione dal cromosoma (sapendo che il chromosoma e' < di 32 bit (ci sta in un unsigned di 32 bit) ho semplificato un po')
+bool chromosome2pos(const unsigned c, position *pos)// interpreta posizione dal cromosoma (sapendo che il chromosoma e' < di 32 bit (ci sta in un unsigned di 32 bit) ho semplificato un po')
 		{
 	unsigned x, y, fi;
 
@@ -911,17 +941,6 @@ bool chromosome2pos(const unsigned c)// interpreta posizione dal cromosoma (sape
 	y = y >> nbitx;
 	y = (y & ymask);
 	y = invGray[y];
-
-// check if chromosome is valid (resulting position, only x and y, is inside search area)
-// we do not decode cromosome to pos. It is much faster to perform a lookup in valid positions mask
-//    if (valid[x][y])
-//    {
-//        // temp for debug
-////        std::cout << "  invalid pos in x: " << x << " y: " << y << "  real X: " << MinX+x*StepX << " Y: " << MinY+y*StepY << std::endl;
-////        img_temp.plot(x,y,50000,0,0);
-//        // end temp
-//        return false;
-//    }
 
 	fi = c;
 	fi = fi >> (nbitx + nbity);
@@ -934,8 +953,34 @@ bool chromosome2pos(const unsigned c)// interpreta posizione dal cromosoma (sape
 	if (ScanNew.pos.rot > 2 * M_PI)
 		ScanNew.pos.rot -= 2 * M_PI; // this line should not be necessary ???
 
-	CUDA_SAFE_CALL(cudaMalloc((void **)&d_pos, sizeof(struct position)));
-	CUDA_SAFE_CALL(cudaMemcpy(d_pos, &ScanNew.pos, sizeof(struct position), cudaMemcpyHostToDevice));
+	*pos = ScanNew.pos;
+
+	return true;
+
+}
+
+bool chromosome2pos(const unsigned c)// interpreta posizione dal cromosoma (sapendo che il chromosoma e' < di 32 bit (ci sta in un unsigned di 32 bit) ho semplificato un po')
+		{
+	unsigned x, y, fi;
+
+	x = (c & xmask);	// primi nbitx bit
+	x = invGray[x];	// codice Gray inverso
+
+	y = c;
+	y = y >> nbitx;
+	y = (y & ymask);
+	y = invGray[y];
+
+	fi = c;
+	fi = fi >> (nbitx + nbity);
+	fi = (fi & rotmask);
+	fi = invGray[fi];
+
+	ScanNew.pos.x = MinX + x * StepX;
+	ScanNew.pos.y = MinY + y * StepY;
+	ScanNew.pos.rot = MinFI + fi * StepFI;
+	if (ScanNew.pos.rot > 2 * M_PI)
+		ScanNew.pos.rot -= 2 * M_PI; // this line should not be necessary ???
 
 	return true;
 
@@ -979,7 +1024,9 @@ position glasm(double* outfitness)
 	set_sga_drawfun(&drawfun);
 #endif
 
+
 	bestever bestfit = sga();
+	printf("END\n");
 	*outfitness = bestfit.fitness;
 	chromosome2pos(bestfit.chrom);
 	return ScanNew.pos;

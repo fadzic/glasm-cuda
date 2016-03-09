@@ -120,9 +120,12 @@ public:
 	{   // Copy of scan
 		CSIT si;
 		readings.clear();
-		si=pSx.readings.begin();
-		while (si!=pSx.readings.end())
-			readings.push_back(*si++);
+		//for (int i=0; i<2; i++)
+		//{
+			si=pSx.readings.begin();
+			while (si!=pSx.readings.end())
+				readings.push_back(*si++);
+		//}
 		pos=pSx.pos;
 	};
 

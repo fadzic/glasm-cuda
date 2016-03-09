@@ -294,7 +294,8 @@ matching_result match()
 }
 
 void post_match()
-{   if (!static_map) {
+{
+	if (!static_map) {
 		delete_lookup_table();
 	}
 
